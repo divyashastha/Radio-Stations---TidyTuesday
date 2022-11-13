@@ -1,0 +1,182 @@
+---
+title: "Radio Stations in the United States in 2022"
+author: "Divya Ramesh"
+output: 
+  flexdashboard::flex_dashboard:
+    orientation: columns
+    vertical_layout: fill
+runtime: shiny
+---
+
+```{r global, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+
+library(flexdashboard)
+library(dplyr)
+library(tidyverse)
+library(plotly)
+library(RColorBrewer)
+library(broom) 
+library(rgeos)
+library(sp)
+library(ggplot2)
+library(ggiraph)
+library(shiny)
+library(geojsonio)
+library(plotly)
+
+```
+
+
+```{r}
+
+#Import hexbins
+hex <- geojson_read("us_states_hexgrid.geojson", what = "sp") #where "sp" is spatial class
+
+#Reformat the 'google_name' field
+#This will remove the (United States) from each value
+#E.g., Vermont (United States) will be changed to Vermont 
+hex@data = hex@data %>% mutate(google_name = gsub(" \\(United States\\)", "", google_name))
+
+#Fortify the data to create a data format output
+#This format is needed to plot the map using the ggplot2 package
+hex_fortify <- tidy(hex, region = "google_name") 
+
+```
+
+```{r, message=FALSE}
+state_stations <- readr::read_csv('https://raw.githubusercontent.com/rfordatascience/tidytuesday/master/data/2022/2022-11-08/state_stations.csv')
+
+```
+```{r}
+state_stn2 <- state_stations %>%
+  mutate(States = factor(state)) %>%
+  mutate(format = case_when(format == "catholic|christian|gospel|religious|Gospel" ~ "Religious",
+                            format == "dance|freeform" ~ "Dance",
+                            format == "country" ~ "Country",
+                            format == "jazz" ~ "Jazz",
+                            format == "contemporary|urban" ~ "Contemporary",
+                            format == "rock|80s" ~ "Rock",
+                            format == "Classic rock" ~ "Rock",
+                            format == "top 40|pop|hits" ~ "Pop",
+                            format == "Classic hip hop" ~ "Pop",
+                            TRUE ~ format)) %>%
+  filter(format=='Religious' |format == 'Dance' | format == 'Country' | format == 'Jazz'| format =='Contemporary' | format == "Rock" | format == "Pop") %>%
+  group_by(state, format) %>%
+  count(format)
+```
+
+
+Column {.sidebar}
+-----------------------------------------------------------------------
+
+```{r}
+selectInput( "varname",
+             label= 'Choose a State',
+             choices = sort(unique(state_stn2$state)),
+             selected = 'format'
+           )
+```
+
+
+```{r}
+state_stn <- state_stations %>%
+  group_by(state) %>%
+  summarise(total_stations=n()) %>%
+  mutate(state = case_when(state == "West_Virginia" ~ "West Virginia",
+                           state == "New_York" ~ "New York",
+                           state == "New_Jersey" ~ "New Jersey",
+                           state == "District_of_Columbia" ~ "District of Columbia",
+                           state == "New_Hampshire" ~ "New Hampshire",
+                           state == "New_Mexico" ~ "New Mexico",
+                           state == "North_Carolina" ~ "North Carolina",
+                           state == "North_Dakota" ~ "North Dakota",
+                           state == "Rhode_Island" ~ "Rhode Island",
+                           state == "South_Carolina" ~ "South Carolina",
+                           state == "South_Dakota" ~ "South Dakota",
+                           TRUE ~ state)) 
+
+#Perform spatial join 
+hex_fortify <- hex_fortify %>% 
+       full_join(. , state_stn, by=c("id"="state")) 
+#Check if the join was successful
+view(hex_fortify)
+
+hex_fortify <- hex_fortify %>%
+  drop_na()
+
+#Create bins
+#These labels will appear on the legend
+hex_fortify$bin <- cut( hex_fortify$total_stations , breaks=c(35, 100, 300, 500, 800, 1300), labels=c("30-100","100-300", "300-500", "500-800", "800+"))
+
+#Choose a sequential ramp for our map 
+#Where n = number of data classes 
+my_palette <- brewer.pal(n=5, name="Blues")
+
+#Add labels 
+centers <- cbind.data.frame(data.frame(gCentroid(hex, byid=TRUE), id=hex@data$iso3166_2))
+
+```
+
+
+
+Column {data-width=350}
+-----------------------------------------------------------------------
+### Genres of Radio Stations by State
+ 
+```{r}
+
+renderPlotly({
+p <- state_stn2 %>%
+  filter(state == input$varname) %>% 
+  ggplot(aes(x = format, y = n, text = paste("<br># Stations:", n))) + 
+  geom_col(stat = 'summary',fun ='sum', col='#4682B4', fill='#4682B4') + 
+  scale_y_continuous(limits = c(0,100), n.breaks = 10) +
+  # geom_col_interactive(fill = '#4682B4', color = '#4682B4') + 
+  labs(x = 'Music Genres', y = "Number of Stations") + 
+  theme_classic() 
+
+ggplotly(p, tooltip = "text")
+
+})
+```
+
+
+Column {data-width=350}
+-----------------------------------------------------------------------
+
+### Radio Stations by State
+
+```{r}
+
+renderggiraph({
+  my_gg <- ggplot() +
+  geom_polygon_interactive(data=hex_fortify, aes(x=long, y = lat, fill=bin, group=group, tooltip = total_stations, data_id = total_stations,), size=0, alpha=0.9, color="#f7f7f7") +
+  geom_text(data=centers, aes(x=x, y=y, label=id), color="#252525", size=5) + #Add our labels
+  theme_void() +
+  scale_fill_manual(
+    values=my_palette, 
+    name="Number of Stations in each State", #Add legend title 
+    guide= guide_legend( keyheight=unit(4, units="mm"), keywidth=unit(10, units="mm"), direction="horizontal", label.position="bottom", title.position="top", nrow=1)
+  ) +
+  ggtitle( "Radio Stations in the United States" ) + #Add map title
+  theme(
+    legend.position = c(0.5, 0.9), #Choose legend positioning (horizontal, vertical)
+    text = element_text(color = "#545454", face="bold"), #This is where we customize the legend text
+    plot.background = element_rect(fill = "#fcfdff", color = NA), #Choose the colour of the background behind the title
+    panel.background = element_rect(fill = "#fcfdff", color = NA), #This is the main background
+    legend.background = element_rect(fill = "#fcfdff", color = NA), #This is the legend background 
+    plot.title = element_text(size=18, hjust=0.5, color = "#545454", face="bold"), #This we where we customize the title 
+  ) 
+ggiraph(code = print(my_gg), width = .7, hover_css = "cursor:pointer;fill:mediumvioletred;") 
+})
+
+```
+
+
+
+
+
+
+
+
